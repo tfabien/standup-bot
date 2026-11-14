@@ -144,6 +144,16 @@ const extraLines = (p) => Math.floor((p.h - 204) / 36);                         
 const menuRow = (i) => ({ x: 12, y: 38 + i * 40, w: 460, h: 36 });
 const MUTE = { x: 370, y: 250, w: 42, h: 22 };
 const backRect = (p) => ({ x: p.x + p.w - 76, y: p.y + 4, w: 70, h: 22 });          // the BACK button of a sub-agent shown as a tile: closes it, the team list returns
+// Allow and Deny of a tile with a pending permission request: two buttons side by side along the bottom of the lead panel.
+const permButtons = (p) => {
+  const w = Math.trunc((p.w - 18) / 2), y = p.y + p.h - 34;
+  return { allow: { x: p.x + 6, y, w, h: 28 }, deny: { x: p.x + 12 + w, y, w, h: 28 } };
+};
+/** The body of POST /permission/answer for a tap on a permission button of session `s`; null for any other tap. */
+export function permAnswer(hit, s) {
+  if (!s?.perm || (hit?.kind !== 'permAllow' && hit?.kind !== 'permDeny')) return null;
+  return { id: s.perm.id, decision: hit.kind === 'permAllow' ? 'allow' : 'deny' };
+}
 const backRectLow = (p) => ({ x: p.x + 6, y: p.y + p.h - 28, w: 70, h: 22 });         // the same BACK button on a session shown full screen: bottom left, the top right holds the context ring
 const inside = (r, x, y) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
 
@@ -168,7 +178,7 @@ export function planBar(p, total) {
  * Tap at (x, y) in screen pixels. ctx: {sessions, selected, menu, asking?, part?}. `part` is 'lead' (a hub tile with the lead panel alone, full width)
  * or 'team' (a hub tile with the team rows alone, full width); left out, the screen shows both side by side. `frameW`: width of the frame in units (default 472).
  * `detailOpen` (team part): a sub-agent is open as a tile, so the only target is its BACK button.
- * @returns {{kind: 'planStep'|'tab'|'mute'|'lead'|'row'|'back'|'menuRow'|'trashRow'|'more'|'none', index?: number}}
+ * @returns {{kind: 'permAllow'|'permDeny'|'planStep'|'tab'|'mute'|'lead'|'row'|'back'|'menuRow'|'trashRow'|'more'|'none', index?: number}}
  */
 export function hitTest(x, y, ctx) {
   if (y < 34) return inside({ x: 6, y: 0, w: 468, h: 34 }, x, y) ? { kind: 'tab' } : { kind: 'none' };
@@ -187,9 +197,14 @@ export function hitTest(x, y, ctx) {
     for (let i = 0; i < rows.length; i++) if (inside(rows[i], x, y)) return n >= 8 && i === 6 ? { kind: 'more' } : { kind: 'row', index: i };
     return { kind: 'none' };
   }
-  const nSubs = ctx.part === 'lead' ? 0 : s && !s.ask ? s.agents.length - 1 : 0;
+  if (s?.perm && ctx.part !== 'team') {                // a request waits for Allow or Deny: only its two buttons answer a tap
+    const b = permButtons(leadRect(0, ctx.frameW, ctx.frameH));
+    if (inside(b.allow, x, y)) return { kind: 'permAllow' };
+    if (inside(b.deny, x, y)) return { kind: 'permDeny' };
+  }
+  const nSubs = ctx.part === 'lead' ? 0 : s && !s.ask && !s.perm ? s.agents.length - 1 : 0;
   if (ctx.back && ctx.part === 'lead' && inside(backRectLow(leadRect(0, ctx.frameW, ctx.frameH)), x, y)) return { kind: 'back' };
-  if (s && !s.ask && s.plan) {                          // a step of the plan bar (a taller target than the bar itself)
+  if (s && !s.ask && !s.perm && s.plan) {                          // a step of the plan bar (a taller target than the bar itself)
     const b = planBar(leadRect(nSubs, ctx.frameW, ctx.frameH), s.plan.total);
     if (x >= b.x && x < b.x + b.w && y >= b.y - 8 && y < b.y + b.h + 8) return { kind: 'planStep', index: Math.min(s.plan.total - 1, Math.floor((x - b.x) / b.step)) };
   }
@@ -227,7 +242,7 @@ export function renderScreen(screen, state, ui) {
     const s = sessions[sel];
     rule = matchRule(state.settings?.rules, s.cwd);
     const subs = s.agents.slice(1);
-    const asking = Boolean(s.ask);
+    const asking = Boolean(s.ask || s.perm);
     const panelSubs = asking || ui.menu || ui.part ? 0 : subs.length;
     const detailSlot = asking || ui.menu || ui.part === 'lead' || !ui.detail || ui.detail.session !== s.id ? 0 : subs.findIndex((a) => a.id === ui.detail.agent) + 1;
     if (!ui.bare) drawTopBar(sessions, sel);
@@ -307,6 +322,7 @@ export function renderScreen(screen, state, ui) {
     line(tx, p.y + 26, tw - ringW, S16, stateColor(lead.state), COLOR.PANEL, `${STATE_LABEL[lead.state]} ${ageOf(lead)}`);
     drawCtxRing(p, wide, tx, tw, s.ctx_pct, s.ctx_k, chip && !wide ? '' : lead.model, chip);
     if (chip && !wide) drawProjectChip(chip, tx, p.y + 44, tw - 30);
+    if (s.perm) { drawPermission(s.perm, x, p.y + 68, w, p); return; }
     if (s.ask) { drawQuestion(s.ask, x, p.y + 68, w, p); return; }
     const mode = state.settings?.done_excerpt ?? 'first';
     const reply = lead.state === 'your_turn' && mode !== 'off' ? lead[mode === 'last' ? 'reply_last' : 'reply_first'] : '';
@@ -395,6 +411,20 @@ export function renderScreen(screen, state, ui) {
   }
 
   // Question of the lead (full width): bold 20 in orange (2 lines with 4 options, else 3), then one numbered option per line.
+  // A permission request: the tool, its argument (2 lines), the seconds left, then the ALLOW and DENY buttons.
+  function drawPermission(perm, x, y, w, p) {
+    line(x, y, w, S20, COLOR.NEEDS, COLOR.PANEL, `Approve ${perm.tool}?`);
+    const cmd = wrapText(perm.detail || perm.cmd, w, 2, m(S16));
+    cmd.forEach((l, i) => screen.text(x, y + 24 + i * 18, w, S16, COLOR.LIGHT, COLOR.PANEL, l));
+    const left = Math.max(0, Math.ceil((perm.until - (ui.nowMs ?? Date.now())) / 1000));
+    const b = permButtons(p);
+    screen.text(x, b.allow.y - 20, w, S16, COLOR.FAINT, COLOR.PANEL, `${left}s`);
+    for (const [r, label, col] of [[b.allow, 'ALLOW', COLOR.WORKING], [b.deny, 'DENY', COLOR.ERROR]]) {
+      screen.fill(r.x, r.y, r.w, r.h, col);
+      screen.text(r.x, r.y + 5, r.w, S16, COLOR.TEXT, col, label, 1);
+    }
+  }
+
   function drawQuestion(ask, x, y, w, p) {
     const opts = String(ask.options).split('|').map((o) => o.trim()).filter(Boolean);
     const q = wrapText(ask.question, w, opts.length > 3 ? 2 : 3, m(S20));

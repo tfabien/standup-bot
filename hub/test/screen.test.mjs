@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  renderScreen, hitTest, teamOrder, wrapText, fitText, roleIndex, paceLevel, projectColors, COLOR, rgb565,
+  renderScreen, hitTest, permAnswer, teamOrder, wrapText, fitText, roleIndex, paceLevel, projectColors, COLOR, rgb565,
 } from '../web/screen.js';
 
 /** A screen that records its drawing operations. Text is 5 px per character, so wrapping is deterministic. */
@@ -325,4 +325,39 @@ test('session_without_match_uses_theme_pack', () => {
     assert.ok(sprites.length > 0 && sprites.every((p) => p.pack === undefined));
     assert.ok(r.ops.some((o) => o.op === 'fill' && o.h === 20 && o.c === projectColors('artillery-x3').bg), 'default chip color');
   }
+});
+
+// A permission request held for the page (POST /permission): the tile shows the tool, the argument and Allow / Deny.
+const perm = (over = {}) => ({ id: 'p1', tool: 'Bash', cmd: 'git status --short', detail: 'git status --short', until: 31000, ...over });
+const permSession = (over = {}) => session({ ask: null, perm: perm(), agents: [agent({ state: 'needs_you' })], ...over });
+const permCtx = { sessions: [permSession()], selected: 0, menu: false, part: 'lead', frameW: 472, frameH: 216 };
+
+test('perm_tile_draws_tool_cmd_and_two_buttons', () => {
+  const r = draw(state([permSession()]), ui({ nowMs: 1000 }));
+  const all = texts(r);
+  assert.ok(all.some((t) => t.includes('Bash')), 'tool');
+  assert.ok(all.some((t) => t.includes('git status')), 'argument');
+  assert.ok(all.includes('ALLOW') && all.includes('DENY'), 'buttons');
+  assert.ok(all.includes('30s'), 'seconds left');
+  assert.ok(!all.some((t) => t.includes('Write the failing tests')), 'no plan bar while asking');
+});
+
+test('hit_test_allow_and_deny_buttons', () => {
+  assert.deepEqual(hitTest(128, 220, permCtx), { kind: 'permAllow' });
+  assert.deepEqual(hitTest(355, 220, permCtx), { kind: 'permDeny' });
+});
+
+test('hit_test_ignores_plan_bar_while_perm', () => {
+  const planY = 36 + 204 - 60;
+  const hit = hitTest(60, planY, permCtx);
+  assert.notEqual(hit.kind, 'planStep');
+  assert.notEqual(hit.kind, 'permAllow');
+});
+
+test('perm_answer_maps_a_hit_to_the_post_body', () => {
+  const s = permSession();
+  assert.deepEqual(permAnswer({ kind: 'permAllow' }, s), { id: 'p1', decision: 'allow' });
+  assert.deepEqual(permAnswer({ kind: 'permDeny' }, s), { id: 'p1', decision: 'deny' });
+  assert.equal(permAnswer({ kind: 'lead' }, s), null);
+  assert.equal(permAnswer({ kind: 'permAllow' }, session()), null, 'no request pending');
 });
