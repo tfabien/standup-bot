@@ -3,7 +3,7 @@
 import { rateLevel } from './rate_glow.js';
 import { bestLayout, fillLastRow, orderSessions, paginate, autoCapacity, pageAlert, isIdle as idleFor, hasTeam, cellsOf } from './hub_view.js';
 import { countStates, beepsFor, beep } from './alerts.js';
-import { renderScreen, hitTest, teamOrder, COLOR, rgb565 } from './screen.js';
+import { renderScreen, hitTest, permAnswer, teamOrder, COLOR, rgb565 } from './screen.js';
 import { TILES_MAX, postSettings } from './settings.js';
 import { mountFooter } from './footer.js';
 import { createVectorScreen } from './vector_screen.js';
@@ -145,6 +145,11 @@ function tap(t, e) {
   const lead0 = tiles.get(s.id) ?? t;
   const detailOpen = Boolean(lead0.detail && s.agents.some((a) => a.id === lead0.detail.agent));
   const hit = hitTest(x, y, { sessions: [s], selected: 0, menu: false, part: t.part, frameW: t.frameW, frameH: t.frameH, detailOpen, back: Boolean(focus) });
+  const answer = permAnswer(hit, s);
+  if (answer) {                                           // Allow or Deny of a permission request: the state that follows redraws the tile
+    fetch('/permission/answer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(answer) }).catch(() => {});
+    return;
+  }
   const until = Date.now() + DETAIL_MS;
   const lead = tiles.get(s.id) ?? t;                      // the agent opened from the team tile shows in the lead tile, which owns the detail
   if (hit.kind === 'row') lead.detail = { session: s.id, agent: s.agents[1 + teamOrder(s.agents.slice(1)).order[hit.index] - 1].id, until: Infinity };    // a sub-agent opens as a tile in place of the team list until BACK
