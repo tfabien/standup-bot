@@ -71,6 +71,14 @@ Quotas and context from a status line or a poller. The body must hold `v` (a num
 
 Body `{ "session": "<id>" }`. Hides a session; it returns with its next working, error or needs-you event. 404 `unknown session`.
 
+### POST /permission
+
+A `PermissionRequest` hook asks the page for Allow or Deny. Body `{ "session", "agent", "tool", "cmd", "detail", "wait_s" }` (strings, `wait_s` a number of seconds, default 30, clamped to 1..120). 400 when `session`, `agent` or `tool` is missing. The response stays open until the user taps, then answers `{ "decision": "allow" | "deny" | "none" }`. `none` means nobody decided: the delay passed, a newer request of the same session and agent replaced it, or the session moved on (`PostToolUse`, `PostToolUseFailure`, `PermissionDenied`, `Stop`, `SessionEnd`, `/dismiss`, `/reset`). A hook that gets `none`, an error or a 404 (older core) prints nothing, so the terminal prompt decides. Loopback only: a LAN client gets 403.
+
+### POST /permission/answer
+
+Body `{ "id": "<id>", "decision": "allow" | "deny" }`, sent by the page with the `perm.id` of a session. 400 `decision must be allow or deny`, 404 `unknown request`. Loopback only.
+
 ### POST /settings
 
 Settings shared by every page. Body: any of `sound` (`all`, `ask`, `off`), `max_tiles` (0 to 32), `theme`, `pulse`, `dim_idle`, `done_excerpt` (`first`, `last`, `off`), `rules`, `marketSources`, `themeAutoUpdate`, `themeVariant`, `themeLooks`, `themeOverrides`, `rate_alert_k` (0, 20, 40 or 80: 0 hides the token rate readout of the tiles, else it turns orange from that many thousand tokens per minute and red from 3 times that). Invalid entries are ignored; 400 when none is valid.
@@ -87,7 +95,7 @@ Forgets every session. The body may be empty.
 
 ### GET /state
 
-The whole state as JSON: `sessions` (each with `id`, `project`, `cwd`, `dot`, `count`, `more`, `title`, `ctx_pct`, `ctx_k`, `ctx_src`, `tok`, `rate`, `plan`, `ask`, `agents`), `more_sessions`, `view`, `usage` (when quotas are known), `agents` (flat v0.1 list), `boot`, `settings`, `catalog`, and `relay` (when a device relay is set).
+The whole state as JSON: `sessions` (each with `id`, `project`, `cwd`, `dot`, `count`, `more`, `title`, `ctx_pct`, `ctx_k`, `ctx_src`, `tok`, `rate`, `plan`, `ask`, `perm` (`null`, or `{ id, tool, cmd, detail, until }` with `until` in epoch milliseconds, while a hook waits for Allow or Deny), `agents`), `more_sessions`, `view`, `usage` (when quotas are known), `agents` (flat v0.1 list), `boot`, `settings`, `catalog`, and `relay` (when a device relay is set).
 `rate` is `{ "tok_min": number }`, the tokens per minute of the session over the last 5 minutes, or `null` with fewer than 2 samples.
 Each entry of `agents` holds `id`, `parent`, `role`, `state`, `cmd`, `detail`, `tok`, `model`, `prev`, `prev_age`, `age` and, after a `Stop`, `reply_first` and `reply_last`.
 

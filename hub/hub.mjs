@@ -8,6 +8,7 @@ import path from 'node:path';
 import { loadCatalog, ICON_TYPES } from './themes_loader.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createModel, PROTOCOL_VERSION } from './model.mjs';
+import { createPermissions } from './permissions.mjs';
 import { validRules } from './rules.mjs';
 import { SOURCE_RE, parseSource, listSource } from './market_source.mjs';
 import { installTheme, removeTheme, readInstalled, saveUserTheme } from './market_install.mjs';
@@ -94,6 +95,10 @@ export function startHub(opts = {}) {
   const dismissTaps = [];
   const settingsTaps = [];
   const changeTaps = [];
+  // Permission requests held for the page (POST /permission): the hook waits, a click on the page answers.
+  const perms = createPermissions();
+  perms.onChange(() => publish());
+  const CLEARING_EVTS = new Set(['PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'Stop', 'SessionEnd']);    // the terminal moved on
 
   // The relay to the device: chosen in the config file, or from the page (POST /relay), which swaps it while the hub runs.
   let relayConf = config.relay ?? { mode: 'none' };
@@ -155,7 +160,8 @@ export function startHub(opts = {}) {
   const firstThemeTimer = opts.firstRunTheme ? setInterval(() => { if (catalog.themes.length === 0) firstTheme(); }, 10 * 60 * 1000) : null;
   firstThemeTimer?.unref?.();
   if (opts.firstRunTheme) setTimeout(firstTheme, 0);
-  const stateJson = () => ({ ...model.toState(now()), boot: startedAt, settings, catalog, ...(relayInfo() ? { relay: relayInfo() } : {}) });
+  const withPerm = (st) => ({ ...st, sessions: st.sessions.map((s) => ({ ...s, perm: perms.view(s.id) })) });
+  const stateJson = () => ({ ...withPerm(model.toState(now())), boot: startedAt, settings, catalog, ...(relayInfo() ? { relay: relayInfo() } : {}) });
   const publish = () => {
     const payload = JSON.stringify(stateJson());
     for (const res of clients) res.write(`data: ${payload}\n\n`);
@@ -325,6 +331,21 @@ export function startHub(opts = {}) {
         req.on('close', () => clients.delete(res));
         return undefined;
       }
+      case 'POST /permission': {                    // a PermissionRequest hook waits here for Allow or Deny (loopback only)
+        let body;
+        try { body = JSON.parse(await readBody(req)); } catch (e) { return e.status === 413 ? text(res, 413, 'body too large') : text(res, 400, 'invalid JSON'); }
+        const str = (v) => (typeof v === 'string' ? v : '');
+        if (!body || !str(body.session) || !str(body.agent) || !str(body.tool)) return text(res, 400, 'session, agent and tool are required');
+        const { id, promise } = perms.open({ session: str(body.session), agent: str(body.agent), tool: str(body.tool), cmd: str(body.cmd), detail: str(body.detail), wait_s: body.wait_s });
+        res.on('close', () => perms.cancel(id));     // the hook went away: nothing to answer any more
+        return json(res, { decision: await promise });
+      }
+      case 'POST /permission/answer': {             // the page taps Allow or Deny (loopback only)
+        let body;
+        try { body = JSON.parse(await readBody(req)); } catch (e) { return e.status === 413 ? text(res, 413, 'body too large') : text(res, 400, 'invalid JSON'); }
+        if (body?.decision !== 'allow' && body?.decision !== 'deny') return text(res, 400, 'decision must be allow or deny');
+        return perms.answer(String(body.id ?? ''), body.decision) ? text(res, 200, 'ok') : text(res, 404, 'unknown request');
+      }
       case 'POST /event':
       case 'POST /usage':
       case 'POST /select':
@@ -340,6 +361,7 @@ export function startHub(opts = {}) {
         }
         if (route === 'POST /event') {
           if (!model.applyEvent(body, now())) return text(res, 400, 'session, agent and a valid state are required');
+          if (CLEARING_EVTS.has(body.evt)) perms.clearSession(String(body.session));
           for (const fn of eventTaps) { try { fn(body); } catch { /* tap errors stay local */ } }
         } else if (route === 'POST /usage') {
           if (!body || typeof body.v !== 'number') return text(res, 400, 'v is required');
@@ -348,6 +370,7 @@ export function startHub(opts = {}) {
         } else if (route === 'POST /dismiss') {
           const id = String(body?.session ?? '');
           if (!model.dismiss(id)) return text(res, 404, 'unknown session');
+          perms.clearSession(id);
           for (const fn of dismissTaps) { try { fn({ session: id }); } catch { /* tap errors stay local */ } }
         } else if (route === 'POST /settings') {
           const next = validSettings(body);
@@ -357,6 +380,7 @@ export function startHub(opts = {}) {
           if (!body || !model.select(String(body.session ?? ''), String(body.agent ?? 'lead'), now(), Number.isFinite(body.hold_ms) ? body.hold_ms : 30000)) return text(res, 404, 'unknown session or agent');
         } else {
           model.clear();
+          perms.clearAll();
         }
         publish();
         return text(res, 200, 'ok');
@@ -469,6 +493,7 @@ export function startHub(opts = {}) {
           serial?.release();
           relay?.stop?.();
           for (const res of clients) res.end();
+          perms.clearAll();
           clients.clear();
           server.close(() => done());
           server.closeAllConnections();

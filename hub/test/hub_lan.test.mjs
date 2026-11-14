@@ -119,3 +119,10 @@ test('remote_cannot_post_lan', () => withLan(async (hub, token) => {
   const r = await call(hub, { method: 'POST', p: '/lan', headers: { ...cookie(token), 'Content-Type': 'application/json' }, body: '{"enabled":false}' });
   assert.equal(r.status, 403);
 }));
+
+test('lan_client_cannot_answer_or_open_permission', () => withLan(async (hub, token) => {
+  for (const p of ['/permission', '/permission/answer']) {
+    const r = await call(hub, { method: 'POST', p, headers: { ...cookie(token), 'Content-Type': 'application/json' }, body: '{"id":"x","decision":"allow","session":"abcd","agent":"lead","tool":"Bash"}' });
+    assert.equal(r.status, 403, p);
+  }
+}));
